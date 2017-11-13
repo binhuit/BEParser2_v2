@@ -449,7 +449,7 @@ def train(model_dir, train_data, iter, beam_size):
     for i in range(1, iter + 1):
         model.tick()
         print 'iter %d' % i
-        # train_data = random.shuffle(train_data)
+        random.shuffle(train_data)
         for num, sent in enumerate(train_data):
             parser.train(sent)
             if num % 100 == 0:
@@ -468,25 +468,32 @@ def test(model_dir, test_data, output_file, beam_size, iter = 'FINAL'):
     parser = Parser(model)
     correct = 0.0
     total = 0.0
-    for sent in test_data:
+    data = []
+    for i, sent in enumerate(test_data):
         dependency_tree = parser.parse(sent)
         gold_tree = parser._build_gold([ROOT] + sent)
-        correct += count_correct(dependency_tree, gold_tree)
+        num_correct = count_correct(dependency_tree, gold_tree)
+        correct += num_correct
         total += len(sent)
-        print gold_tree.deps
-        print dependency_tree.deps
+        if (len(sent) - num_correct > 0):
+            data.append("cau %d: %d/%d" % (i, num_correct, len(sent)))
+            data.append(" ".join(token['form'] for token in sent))
+    with open("wrong_predict_sent_beam_4","w") as f:
+        for line in data:
+            f.write(line+"\n")
+
     print 'Correct: %d' % correct
     print 'Total: %d' % total
     print "Accuracy: " + str(correct/total)
 
 def main():
-    model_dir = 'test_model'
+    model_dir = 'test_model_beam_4'
     train_file = 'data'
     test_file = 'data'
-    beam_size = 1
+    beam_size = 4
     output_file = None
     iter = 30
-    is_train = False
+    is_train = True
     if is_train:
         train_data = list(read_corpus(train_file))
         print len(train_data)
@@ -496,6 +503,7 @@ def main():
     else:
         test_data = list(read_corpus(test_file))
         test(model_dir, test_data, output_file, beam_size)
+
 
 
 main()

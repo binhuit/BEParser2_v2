@@ -49,7 +49,7 @@ class MultitronParametersTest:
             out.write("%s" % f)
             for c in xrange(self.nclasses):
                 p = self.W[f]
-                out.write(" %s " % ((p.acc[c] + ((self.now - p.lastUpd[c]) * p.w[c])) / self.now))
-                # out.write(" %s " % (p.w[c]))
+                # out.write(" %s " % ((p.acc[c] + ((self.now - p.lastUpd[c]) * p.w[c])) / self.now))
+                out.write(" %s " % (p.w[c]))
             out.write("\n")
 
