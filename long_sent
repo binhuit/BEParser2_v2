@@ -1,0 +1,14 @@
+1	Khi	_	N	N	_	11	tmp	_
+2	nhảy	_	V	V	_	1	nmod	_
+3	xuống	_	R	R	_	2	adv	_
+4	,	_	,	,	_	11	punct	_
+5	vòi	_	N	N	_	11	sub	_
+6	nối	_	V	V	_	5	vmod	_
+7	miệng	_	N	N	_	6	vmod	_
+8	với	_	C	C	_	7	coord	_
+9	máy	_	N	N	_	8	conj	_
+10	dưỡng_khí	_	N	N	_	9	nmod	_
+11	bị	_	V	V	_	0	root	_
+12	bật	_	V	V	_	11	vmod	_
+13	ra	_	R	R	_	12	adv	_
+14	.	_	.	.	_	11	punct	_
