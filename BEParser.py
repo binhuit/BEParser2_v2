@@ -249,7 +249,11 @@ class Parser(object):
             next_beam = Beam(self.model.beam_size)
             valid_action.clear()
             for state in beam:
-                pending, prev_score, prev_actions, deps, stt = self._extract_state(state)
+                pending = state['pending']
+                prev_score = state['score']
+                prev_actions = state['actions']
+                deps = state['deps']
+                stt = state['valid']
                 scached, fcached = self._generate_cached(state)
                 for i, (tok1, tok2) in enumerate(zip(pending, pending[1:])):
                     cached_idx = (tok1['id'], tok2['id'])
@@ -286,46 +290,6 @@ class Parser(object):
         # save model
         self.model.save(iter)
 
-    def _build_gold(self, sent):
-        # build gold deps
-        deps = DependenciesCollection()
-        for token in sent[1:]:
-            child = token
-            parent = sent[child['parent']]
-            deps.add(parent, child)
-        return deps
-
-    def _get_state(self, pending, actions=None, score=0.0,
-                   deps=DependenciesCollection(), fcached=None, scached=None, valid=True):
-        """
-        state in beam
-        :param pending: list of token
-        :param features: global features until prv action
-        :param score: score of this state
-        :param clas: class of prev action
-        :param deps: current deps
-        :param valid: is this state valid
-        :return: a dict
-        """
-        # copy pending
-        # copy deps
-        deps = copy.copy(deps)
-        if fcached is None:
-            fcached = {}
-        if scached is None:
-            scached = {}
-        if actions is None:
-            actions = []
-        return {
-            'pending': pending,
-            'actions': actions,
-            'score': score,
-            'deps': deps,
-            'valid': valid,
-            'fcached': fcached,
-            'scached': scached
-
-        }
 
     def _apply_action(self, arc, state):
         # return new pending and new deps
@@ -348,11 +312,6 @@ class Parser(object):
     def _check_valid(self, arc, deps, oracle):
         # use oracle to check valid status of an action
         return oracle.allow_connection(deps, arc[1], arc[0])
-
-    def _extract_state(self, state):
-        # unpack state
-        return state['pending'], state['score'], state['actions'], state['deps'] \
-            , state['valid']
 
     def _get_action(self, clas, tok1, tok2):
         """
@@ -405,8 +364,6 @@ class Parser(object):
         new_state = get_state(n_pending, actions, score,
                               n_deps, n_fcached, n_scached, valid)
         return new_state
-
-
 
 
 def read_corpus(filename):
@@ -478,7 +435,7 @@ def test(model_dir, test_data, output_file, beam_size, iter='FINAL'):
     data = []
     for i, sent in enumerate(test_data):
         dependency_tree = parser.parse(sent)
-        gold_tree = parser._build_gold([ROOT] + sent)
+        gold_tree = build_gold([ROOT] + sent)
         num_correct = count_correct(dependency_tree, gold_tree)
         correct += num_correct
         total += len(sent)
@@ -500,7 +457,7 @@ def main():
     test_file = 'data'
     beam_size = 1
     output_file = None
-    iter = 30
+    iter = 10
     is_train = False
     if is_train:
         train_data = list(read_corpus(train_file))
