@@ -44,3 +44,6 @@ class Beam:
 
     def is_empty(self):
         return self.items is []
+
+    def clear(self):
+        self.items = []

@@ -1,19 +1,19 @@
 import os
 import random
-from deps import DependenciesCollection
-from engfeatures2 import FeaturesExtractor
-from beam import Beam
-from collections import defaultdict, namedtuple
-from ml.ml import MultitronParameters, MulticlassModel
-from ml_lib import MultitronParametersTest
-from constant import ROOT, PAD
 import copy
 import isprojective
 import time
+from deps import DependenciesCollection
+from engfeatures2 import FeaturesExtractor
+from beam import Beam
+from collections import defaultdict
+from ml.ml import MultitronParameters, MulticlassModel
+from ml_lib import MultitronParametersTest
+from constant import ROOT
+
 
 
 #########################################################################
-
 
 class Oracle:
     """
@@ -30,8 +30,8 @@ class Oracle:
     def _init_sent(self, sent):
         """
         setup for oracle object
-        :param sent: 
-        :return: 
+        :param sent:
+        :return:
         """
         # set sent attr of object
         self.sent = sent
@@ -83,12 +83,9 @@ class TrainModel(object):
     """
 
     def __init__(self, model_dir, beam_size):
-        # model_dir to save model
         self.model_dir = model_dir
-        # object use to extract feature in pending
         self.feats_extractor = FeaturesExtractor()
         self.beam_size = beam_size
-        # if model_dir is not exist, create it
         if not os.path.isdir(self.model_dir):
             os.makedirs(self.model_dir)
         # A linear model classification with 2 class
@@ -100,9 +97,9 @@ class TrainModel(object):
         """
         rewarding features lead to correct action
         file features lead to wrong action
-        :param neg_state: 
-        :param pos_state: 
-        :return: 
+        :param neg_state:
+        :param pos_state:
+        :return:
         """
         # tick() increase variable store number of update
         # self.perceptron.tick()
@@ -161,6 +158,36 @@ class TestModel(object):
         return self.perceptron.get_scores(features)
 
 
+def get_state(pending, actions=None, score=0.0, deps=DependenciesCollection(),
+              fcached=None, scached=None, valid=True):
+        deps = copy.copy(deps)
+        if fcached is None:
+            fcached = {}
+        if scached is None:
+            scached = {}
+        if actions is None:
+            actions = []
+        return {
+            'pending': pending,
+            'actions': actions,
+            'score': score,
+            'deps': deps,
+            'valid': valid,
+            'fcached': fcached,
+            'scached': scached
+
+        }
+
+
+def build_gold(sent):
+    deps = DependenciesCollection()
+    for token in sent[1:]:
+        child = token
+        parent = sent[child['parent']]
+        deps.add(parent, child)
+    return deps
+
+
 class Parser(object):
     """
     A heart of program, train and test
@@ -171,63 +198,89 @@ class Parser(object):
         self.model = model
 
     def parse(self, sent):
-        # parse one sent according to current model paramaters
-        # ROOT token at begining of pending
         sent = [ROOT] + sent
-        # start state
-        init_state = self._get_state(sent)
-        # create a beam
+        init_state = get_state(sent)
         beam = Beam(self.model.beam_size)
-        # add state to beam
         beam.add(init_state)
-        # loop until only one tree left
         for step in range(len(sent) - 1):
-            # beam of next step
-            beam = self._extend_beam_for_test(beam)
-        # result of parse
+            next_beam = Beam(self.model.beam_size)
+            for state in beam:
+                pending = state['pending']
+                prev_score = state['score']
+                prev_actions = ['actions']
+                scached, fcached = self._generate_cached(state)
+                for i, (tok1, tok2) in enumerate(zip(pending, pending[1:])):
+                    cached_idx = (tok1['id'], tok2['id'])
+                    scores = scached[cached_idx]
+                    lc_feats = fcached[cached_idx]
+                    for clas, score in enumerate(scores):
+                        arc = self._get_action(clas, tok1, tok2)
+                        next_action = self._wrap_action(clas, lc_feats, arc)
+                        actions = prev_actions + [next_action]
+                        n_score = prev_score + score
+
+                        if next_beam.is_empty() or n_score > next_beam.min_score():
+                            new_state = self._gen_state(i, pending, actions,n_score,
+                                                        scached, fcached, arc, state)
+                            next_beam.add(new_state)
+            beam = next_beam
         deps = beam.top()['deps']
         return deps
 
     def train(self, sent):
+        def check_equal(deps1, deps2):
+            gold_arcs = deps1.deps
+            beam_arcs = deps2.deps
+            if not gold_arcs.difference(beam_arcs):
+                return True
+            else:
+                return False
+
         self.model.tick()
-        # update paramaters with one sent
-        # ROOT token at begining of pending
         sent = [ROOT] + sent
-        # oracle object to check valid action
         oracle = Oracle(sent)
-        # gold_deps for full update
-        gold_deps = self._build_gold(sent)
-        # create start state
-        init_state = self._get_state(sent)
-        # create beam
+        gold_deps = build_gold(sent)
+        init_state = get_state(sent)
         beam = Beam(self.model.beam_size)
-        # add state to beam
         beam.add(init_state)
-        # correct action with highest score at one step
-        valid_action = None
+        valid_action = Beam(beam_size=1)
         for step in range(len(sent) - 1):
-            beam, valid_action = self._extend_beam(beam, oracle)
-            # if beam not contain valid action in it, update
-            if not beam.has_element(valid_action):
+            # beam, valid_action = self._extend_beam(beam, oracle)
+            next_beam = Beam(self.model.beam_size)
+            valid_action.clear()
+            for state in beam:
+                pending, prev_score, prev_actions, deps, stt = self._extract_state(state)
+                scached, fcached = self._generate_cached(state)
+                for i, (tok1, tok2) in enumerate(zip(pending, pending[1:])):
+                    cached_idx = (tok1['id'], tok2['id'])
+                    scores = scached[cached_idx]
+                    lc_feats = fcached[cached_idx]
+
+                    for clas, score in scores.iteritems():
+                        arc = self._get_action(clas, tok1, tok2)
+                        actions = prev_actions + [self._wrap_action(clas, lc_feats, arc)]
+                        if stt:
+                            is_valid = self._check_valid(arc, deps, oracle)
+                        else:
+                            is_valid = False
+                        n_score = prev_score + score
+                        if next_beam.is_empty() or n_score > next_beam.min_score() or is_valid:
+                            new_state = self._gen_state(i, pending, actions, n_score, scached,
+                                                        fcached, arc, state, is_valid)
+                            if next_beam.is_empty() or n_score > next_beam.min_score():
+                                next_beam.add(new_state)
+                            if is_valid:
+                                valid_action.add(new_state)
+            beam = next_beam
+            if not beam.has_element(valid_action.top()):
                 beam_top = beam.top()
-                self.model.update(beam_top, valid_action)
+                self.model.update(beam_top, valid_action.top())
                 break
         else:
-            beam_top = beam.top()
-            beam_deps = beam_top['deps']
-            # if final deps is not like gold_deps, do full update
-            if not self._check_equal(gold_deps, beam_deps):
-                self.model.update(beam_top, valid_action)
-
-    def _check_equal(self, gold_deps, beam_deps):
-        "check if two set is equal"
-        gold_arcs = gold_deps.deps
-        beam_arcs = beam_deps.deps
-        # if two set joint and return none, they are identical
-        if not gold_arcs.difference(beam_arcs):
-            return True
-        else:
-            return False
+            best_state = beam.top()
+            predicted_deps = best_state['deps']
+            if not check_equal(gold_deps, predicted_deps):
+                self.model.update(best_state, valid_action.top())
 
     def save_weight(self, iter):
         # save model
@@ -242,7 +295,7 @@ class Parser(object):
             deps.add(parent, child)
         return deps
 
-    def _get_state(self, pending, actions=None, score=float('-inf'),
+    def _get_state(self, pending, actions=None, score=0.0,
                    deps=DependenciesCollection(), fcached=None, scached=None, valid=True):
         """
         state in beam
@@ -255,7 +308,6 @@ class Parser(object):
         :return: a dict
         """
         # copy pending
-        pending = list(pending)
         # copy deps
         deps = copy.copy(deps)
         if fcached is None:
@@ -278,18 +330,24 @@ class Parser(object):
     def _apply_action(self, arc, state):
         # return new pending and new deps
         deps = copy.deepcopy(state['deps'])
-        pending = list(state['pending'])
+        pending = state['pending']
         # unpacking arc
         child, parent = arc
         # add arc to deps
         deps.add(parent, child)
         # remove child
-        pending.remove(child)
-        return pending, deps
+        child_idx = pending.index(child)
+        if child_idx == 0:
+            new_pending = pending[1:]
+        elif child_idx == len(pending) - 1:
+            new_pending = pending[:-1]
+        else:
+            new_pending = pending[:child_idx] + pending[child_idx+1:]
+        return new_pending, deps
 
     def _check_valid(self, arc, deps, oracle):
         # use oracle to check valid status of an action
-        return oracle.allow_connection(deps, arc.parent, arc.child)
+        return oracle.allow_connection(deps, arc[1], arc[0])
 
     def _extract_state(self, state):
         # unpack state
@@ -299,16 +357,15 @@ class Parser(object):
     def _get_action(self, clas, tok1, tok2):
         """
 
-        :param clas: 
-        :param tok1: 
-        :param tok2: 
+        :param clas:
+        :param tok1:
+        :param tok2:
         :return: children, parent
         """
-        arc = namedtuple('arc', ['child', 'parent'])
         if clas == 0:
-            return arc(tok1, tok2)
+            return tok1, tok2
         else:
-            return arc(tok2, tok1)
+            return tok2, tok1
 
     def _get_cached(self, pos, cached, pending):
         n_cached = copy.copy(cached)
@@ -341,66 +398,15 @@ class Parser(object):
                 scached[cached_idx] = self.model.get_score(features)
         return scached, fcached
 
-    def _extend_beam_for_test(self, beam):
-        new_beam = Beam(self.model.beam_size)
-        for state in beam:
-            # unpacking state
-            pending, prev_score, prev_actions, deps, _ = self._extract_state(state)
-            scached, fcached = self._generate_cached(state)
-            for i, (tok1, tok2) in enumerate(zip(pending, pending[1:])):
-                cached_idx = (tok1['id'], tok2['id'])
-                scores = scached[cached_idx]
-                lc_feats = fcached[cached_idx]
-                for clas, score in enumerate(scores):
-                    arc = self._get_action(clas, tok1, tok2)
-                    actions = prev_actions + [self._wrap_action(i, lc_feats, arc)]
-                    n_scached = self._get_cached(i, scached, pending)
-                    n_fcached = self._get_cached(i, fcached, pending)
-                    n_pending, n_deps = self._apply_action(arc, state)
-                    # try starter score is zero
-                    if prev_score == float('-inf'):
-                        n_score = score
-                    else:
-                        n_score = prev_score + score
-                    new_state = self._get_state(n_pending, actions, n_score,
-                                                n_deps, n_fcached, n_scached)
+    def _gen_state(self, i, pending, actions, score, scached, fcached, arc, state, valid=True):
+        n_scached = self._get_cached(i, scached, pending)
+        n_fcached = self._get_cached(i, fcached, pending)
+        n_pending, n_deps = self._apply_action(arc, state)
+        new_state = get_state(n_pending, actions, score,
+                              n_deps, n_fcached, n_scached, valid)
+        return new_state
 
-                    new_beam.add(new_state)
-        return new_beam
 
-    def _extend_beam(self, beam, oracle):
-        new_beam = Beam(self.model.beam_size)
-        valid_action = Beam(beam_size=1)
-        for state in beam:
-            pending, prev_score, prev_actions, deps, stt = self._extract_state(state)
-            scached, fcached = self._generate_cached(state)
-            for i, (tok1, tok2) in enumerate(zip(pending, pending[1:])):
-                cached_idx = (tok1['id'], tok2['id'])
-                scores = scached[cached_idx]
-                lc_feats = fcached[cached_idx]
-                for clas, score in scores.iteritems():
-                    arc = self._get_action(clas, tok1, tok2)
-                    actions = prev_actions + [self._wrap_action(clas, lc_feats, arc)]
-                    if stt:
-                        is_valid = self._check_valid(arc, deps, oracle)
-                    else:
-                        is_valid = False
-                    if prev_score == float('-inf'):
-                        n_score = score
-                    else:
-                        n_score = prev_score + score
-
-                    if new_beam.is_empty() or n_score > new_beam.min_score() or is_valid:
-                        n_scached = self._get_cached(i, scached, pending)
-                        n_fcached = self._get_cached(i, fcached, pending)
-                        n_pending, n_deps = self._apply_action(arc, state)
-                        new_state = self._get_state(n_pending, actions, n_score,
-                                                    n_deps, n_fcached, n_scached, is_valid)
-                        if new_beam.is_empty() or n_score > new_beam.min_score():
-                            new_beam.add(new_state)
-                        if is_valid:
-                            valid_action.add(new_state)
-        return new_beam, valid_action.top()
 
 
 def read_corpus(filename):
@@ -436,6 +442,8 @@ def line_to_tok(line):
 
 
 def train(model_dir, train_data, iter, beam_size):
+    global update_time
+    global before_train
     model = TrainModel(model_dir, beam_size)
     parser = Parser(model)
     total_time = 0.0
@@ -450,7 +458,7 @@ def train(model_dir, train_data, iter, beam_size):
         iter_time = time.time() - start
         total_time += iter_time
         print 'Time train: %s' % iter_time
-        if i % 5 == 0:
+        if i % 1 == 0:
             parser.save_weight(str(i))
     print "Total training time: %s" % total_time
     parser.save_weight('FINAL')
@@ -487,13 +495,13 @@ def test(model_dir, test_data, output_file, beam_size, iter='FINAL'):
 
 
 def main():
-    model_dir = 'fold_1_model'
-    train_file = 'corpus/fold_train_1.conll'
-    test_file = 'corpus/fold_test_1.conll'
+    model_dir = 'test_model'
+    train_file = 'data'
+    test_file = 'data'
     beam_size = 1
     output_file = None
-    iter = 60
-    is_train = True
+    iter = 30
+    is_train = False
     if is_train:
         train_data = list(read_corpus(train_file))
         print len(train_data)
